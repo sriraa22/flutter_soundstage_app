@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'bluetooth_service.dart';
 void main() {
   runApp(const HearingAidApp());
 }
@@ -56,7 +57,82 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   int currentPage = 0;
 
   final PageController pageController = PageController();
+  List<Map<String, dynamic>> discoveredDevices = [];
+    String bluetoothStatus = 'Ready to connect';
+@override
+void initState() {
+  super.initState();
 
+  BluetoothService.setMethodCallHandler((call) async {
+    // Bluetooth events can still arrive after onboarding is closed
+    if (!mounted) return;
+
+    if (call.method == 'micChanged') {
+      setState(() {
+        bluetoothStatus = call.arguments == null
+            ? 'Using phone microphone'
+            : 'Using microphone: ${call.arguments}';
+      });
+    }
+
+    if (call.method == 'deviceFound') {
+      final device = Map<String, dynamic>.from(call.arguments);
+
+      setState(() {
+        final index = discoveredDevices.indexWhere(
+          (d) => d['address'] == device['address'],
+        );
+
+        if (index == -1) {
+          discoveredDevices.add(device);
+        } else {
+          // Name, signal or paired state can change while scanning/pairing
+          discoveredDevices[index] = {
+            ...discoveredDevices[index],
+            ...device,
+            'rssi': device['rssi'] ?? discoveredDevices[index]['rssi'],
+          };
+        }
+      });
+    }
+
+    if (call.method == 'bluetoothDisabled') {
+      setState(() {
+        bluetoothStatus = 'Bluetooth is off. Turn it on and scan again.';
+      });
+    }
+
+    if (call.method == 'scanStarted') {
+      setState(() {
+        bluetoothStatus = 'Scanning for devices...';
+      });
+    }
+
+    if (call.method == 'scanStopped') {
+      setState(() {
+        bluetoothStatus = 'Scan stopped';
+      });
+    }
+
+    if (call.method == 'pairingStatus') {
+      setState(() {
+        bluetoothStatus = call.arguments.toString();
+      });
+    }
+
+    if (call.method == 'connectionStatus') {
+      setState(() {
+        bluetoothStatus = call.arguments.toString();
+      });
+    }
+
+    if (call.method == 'scanError') {
+      setState(() {
+        bluetoothStatus = call.arguments.toString();
+      });
+    }
+  });
+}
   void nextPage() {
     if (currentPage < 2) {
       setState(() {
@@ -238,26 +314,65 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           ),
 
           const SizedBox(height: 40),
-
-          // Fake pairing progress bar
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: LinearProgressIndicator(
-              value: 0.7,
-              minHeight: 10,
-              backgroundColor: Colors.grey[800],
-              valueColor: const AlwaysStoppedAnimation<Color>(
-                Colors.blueAccent,
+            Text(
+              bluetoothStatus,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.grey,
+                fontSize: 16,
               ),
             ),
-          ),
 
-          const SizedBox(height: 15),
+            const SizedBox(height: 20),
 
-          const Text(
-            'Ready to connect',
-            style: TextStyle(color: Colors.grey),
-          ),
+            ElevatedButton.icon(
+              onPressed: () async {
+                await BluetoothService.requestPermissions();
+                await BluetoothService.startScan();
+              },
+              icon: const Icon(Icons.bluetooth_searching),
+              label: const Text('Scan for Devices'),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Expanded + ListView so a long device list scrolls instead of overflowing
+            if (discoveredDevices.isNotEmpty)
+              Expanded(
+                child: ListView.builder(
+                  itemCount: discoveredDevices.length,
+                  itemBuilder: (context, index) {
+                  final device = discoveredDevices[index];
+                  final name = device['name'] ?? 'Unknown device';
+                  final address = device['address'] ?? '';
+                  final rssi = device['rssi'];
+                  final kind = device['kind'] ?? 'BLE';
+                  final paired = device['paired'] == true;
+
+                  return Card(
+                    child: ListTile(
+                      leading: Icon(
+                        kind == 'Audio' ? Icons.headphones : Icons.bluetooth,
+                      ),
+                      title: Text(name),
+                      subtitle: Text([
+                        kind,
+                        if (paired) 'Paired',
+                        if (rssi != null) 'Signal: $rssi dBm',
+                      ].join(' • ')),
+                      trailing: ElevatedButton(
+                        onPressed: () async {
+                          await BluetoothService.connectDevice(address);
+                        },
+                        child: Text(
+                          paired || kind == 'BLE' ? 'Connect' : 'Pair',
+                        ),
+                      ),
+                    ),
+                  );
+                  },
+                ),
+              ),
         ],
       ),
     );
@@ -372,7 +487,7 @@ class _MainScreenState extends State<MainScreen> {
 // SOUNDSTAGE SCREEN
 // =====================================================
 
-class SoundstageScreen extends StatelessWidget {
+class SoundstageScreen extends StatefulWidget {
   final List<Person> people;
   final Function(int) onTogglePerson;
 
@@ -383,7 +498,80 @@ class SoundstageScreen extends StatelessWidget {
   });
 
   @override
+  State<SoundstageScreen> createState() => _SoundstageScreenState();
+}
+
+class _SoundstageScreenState extends State<SoundstageScreen> {
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _speechAvailable = false;
+  bool _isListening = false;
+  String _transcript = 'Tap the mic and start speaking';
+
+  @override
+  void initState() {
+    super.initState();
+    _initSpeech();
+  }
+
+  Future<void> _initSpeech() async {
+    _speechAvailable = await _speech.initialize(
+      onStatus: (status) {
+        if (status == 'notListening' && _isListening) {
+          setState(() => _isListening = false);
+        }
+      },
+      onError: (error) {
+        setState(() {
+          _isListening = false;
+          _transcript = 'Error: ${error.errorMsg}';
+        });
+      },
+    );
+    setState(() {});
+  }
+
+  Future<void> _toggleListening() async {
+    if (!_speechAvailable) {
+      await _initSpeech();
+      if (!_speechAvailable) return;
+    }
+
+    if (_isListening) {
+      await _speech.stop();
+      setState(() => _isListening = false);
+      return;
+    }
+
+    setState(() {
+      _isListening = true;
+      _transcript = 'Listening...';
+    });
+
+    await _speech.listen(
+      onResult: (result) {
+        setState(() {
+          _transcript = result.recognizedWords;
+        });
+      },
+      listenOptions: stt.SpeechListenOptions(
+        partialResults: true,
+        listenMode: stt.ListenMode.dictation,
+        listenFor: const Duration(minutes: 5),
+        pauseFor: const Duration(seconds: 5),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _speech.stop();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final people = widget.people;
+    final onTogglePerson = widget.onTogglePerson;
     return SafeArea(
       child: Column(
         children: [
@@ -584,21 +772,28 @@ class SoundstageScreen extends StatelessWidget {
                 border: Border.all(color: Colors.grey[800]!),
                 borderRadius: BorderRadius.circular(18),
               ),
-              child: const Row(
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Icon(
                     Icons.chat_bubble_outline,
-                    color: Colors.blueAccent,
+                    color: _isListening ? Colors.redAccent : Colors.blueAccent,
                   ),
-                  SizedBox(width: 12),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      'Maria\n"...grab the table by the window?"',
-                      style: TextStyle(
+                      _transcript,
+                      style: const TextStyle(
                         fontSize: 16,
                         height: 1.5,
                       ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: _toggleListening,
+                    icon: Icon(
+                      _isListening ? Icons.mic : Icons.mic_none,
+                      color: _isListening ? Colors.redAccent : Colors.blueAccent,
                     ),
                   ),
                 ],
@@ -608,9 +803,9 @@ class SoundstageScreen extends StatelessWidget {
 
           const SizedBox(height: 12),
 
-          const Text(
-            'Tap a person to keep or mute',
-            style: TextStyle(
+          Text(
+            _isListening ? 'Listening... tap the mic to stop' : 'Tap the mic to transcribe speech',
+            style: const TextStyle(
               color: Colors.grey,
               fontSize: 14,
             ),
