@@ -1,37 +1,34 @@
-<<<<<<< HEAD
-# soundstage_app
+# Soundstage
 
-A new Flutter project.
+Native Android app (Kotlin + Jetpack Compose) that helps people with hearing aids follow conversations:
 
-## Getting Started
+- **Onboarding** – scan for, pair and connect Bluetooth hearing aids, headphones and BLE devices.
+- **Soundstage** – a map of the people around you; tap someone to include or mute them.
+- **Live captions** – speech turned into text by the phone's speech recognizer, using the connected
+  headset's microphone when there is one. Captions keep running in the background with a notification.
+- **People** – switch each person in or out of the conversation.
 
-This project is a starting point for a Flutter application.
+## Project layout
 
-A few resources to get you started if this is your first Flutter project:
+```
+app/src/main/java/com/example/soundstage_app/
+  MainActivity.kt          Hosts the UI, permissions, starts/stops captions
+  SoundstageViewModel.kt   Screen state (people, devices, transcript)
+  BluetoothController.kt   Scanning, pairing, connecting
+  BluetoothAudioRouter.kt  Uses the headset microphone while one is connected
+  BluetoothDevices.kt      Device kinds (BLE / Classic / Audio)
+  CaptionService.kt        Foreground service running speech recognition
+  ui/                      Compose screens (onboarding, soundstage, people)
+app/src/test/              Unit tests
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+## Build
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
-=======
-# soundstage_app
+Open the folder in Android Studio, or from a terminal:
 
-A new Flutter project.
+```
+./gradlew installDebug        # build and install on a connected phone
+./gradlew testDebugUnitTest   # run unit tests
+```
 
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
->>>>>>> 2332a514e9a6c83f8bfbbaff03d13191f47c985d
+Requires JDK 17+ (Android Studio's bundled JDK works) and the Android SDK (compileSdk 36).
