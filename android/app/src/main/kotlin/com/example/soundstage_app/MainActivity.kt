@@ -34,7 +34,9 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "soundstage/bluetooth"
+    private val CAPTION_CHANNEL = "soundstage/captions"
     private val PERMISSION_REQUEST = 100
+    private val CAPTION_PERMISSION_REQUEST = 101
     private val SCAN_DURATION_MS = 15_000L
     private val AUDIO_CONNECT_TIMEOUT_MS = 30_000L
 
@@ -43,6 +45,9 @@ class MainActivity : FlutterActivity() {
     private var bluetoothGatt: BluetoothGatt? = null
 
     private var methodChannel: MethodChannel? = null
+    private var captionChannel: MethodChannel? = null
+    // Waiting for the microphone permission before starting captions
+    private var pendingCaptionStart: MethodChannel.Result? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // Devices seen during the scan, so pairing/connecting uses the same object
@@ -208,6 +213,65 @@ class MainActivity : FlutterActivity() {
 
         audioRouter = BluetoothAudioRouter(this, ::onMicChanged)
         audioRouter.start()
+
+        captionChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            CAPTION_CHANNEL
+        )
+
+        captionChannel?.setMethodCallHandler { call, result ->
+
+            when (call.method) {
+
+                "start" -> startCaptions(result)
+
+                "stop" -> {
+                    CaptionService.stop(this)
+                    result.success(true)
+                }
+
+                else -> {
+                    result.notImplemented()
+                }
+            }
+        }
+
+        CaptionService.listener = object : CaptionService.Listener {
+            override fun onListening() {
+                captionChannel?.invokeMethod("listening", null)
+            }
+
+            override fun onCaption(text: String, isFinal: Boolean) {
+                captionChannel?.invokeMethod("caption", mapOf("text" to text, "final" to isFinal))
+            }
+
+            override fun onError(message: String) {
+                captionChannel?.invokeMethod("error", message)
+            }
+
+            override fun onStopRequested() {
+                captionChannel?.invokeMethod("stopRequested", null)
+            }
+        }
+    }
+
+    // Asks for the microphone first if needed. Also asks (Android 13+) to show the captions notification,
+    // which holds the Stop button; captions run in the background without it too.
+    private fun startCaptions(result: MethodChannel.Result) {
+        val missing = buildList {
+            add(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+
+        if (missing.isEmpty() || permissionRequestInFlight) {
+            result.success(CaptionService.start(this))
+            return
+        }
+        pendingCaptionStart = result
+        permissionRequestInFlight = true
+        requestPermissions(missing.toTypedArray(), CAPTION_PERMISSION_REQUEST)
     }
 
     // Flutter channels must only be used from the main thread; GATT callbacks run on a binder thread
@@ -264,6 +328,13 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == CAPTION_PERMISSION_REQUEST) {
+            permissionRequestInFlight = false
+            pendingCaptionStart?.success(CaptionService.start(this))
+            pendingCaptionStart = null
+            return
+        }
 
         if (requestCode != PERMISSION_REQUEST) return
         permissionRequestInFlight = false
@@ -666,6 +737,10 @@ class MainActivity : FlutterActivity() {
 
         bluetoothGatt?.close()
         bluetoothGatt = null
+
+        // Captions run in this activity's Flutter engine, so they end with it
+        CaptionService.listener = null
+        CaptionService.stop(this)
 
         if (::audioRouter.isInitialized) {
             audioRouter.stop()

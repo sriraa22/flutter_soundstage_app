@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'bluetooth_service.dart';
+import 'live_captions.dart';
 void main() {
   runApp(const HearingAidApp());
 }
@@ -448,15 +448,20 @@ class _MainScreenState extends State<MainScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: selectedIndex == 0
-          ? SoundstageScreen(
-              people: people,
-              onTogglePerson: togglePerson,
-            )
-          : PeopleScreen(
-              people: people,
-              onTogglePerson: togglePerson,
-            ),
+      // IndexedStack keeps the Soundstage screen (and its captions) alive on the People tab
+      body: IndexedStack(
+        index: selectedIndex,
+        children: [
+          SoundstageScreen(
+            people: people,
+            onTogglePerson: togglePerson,
+          ),
+          PeopleScreen(
+            people: people,
+            onTogglePerson: togglePerson,
+          ),
+        ],
+      ),
 
       bottomNavigationBar: NavigationBar(
         backgroundColor: const Color(0xFF1C1C1C),
@@ -502,69 +507,67 @@ class SoundstageScreen extends StatefulWidget {
 }
 
 class _SoundstageScreenState extends State<SoundstageScreen> {
-  final stt.SpeechToText _speech = stt.SpeechToText();
-  bool _speechAvailable = false;
+  // True while the user has captions switched on (they keep running in the background)
   bool _isListening = false;
   String _transcript = 'Tap the mic and start speaking';
+  // The last few finished sentences, shown above the one being spoken
+  final List<String> _lines = [];
+  static const _maxLines = 3;
 
   @override
   void initState() {
     super.initState();
-    _initSpeech();
+    LiveCaptions.setHandlers(
+      onListening: () => _update(() {
+        if (_lines.isEmpty) _transcript = 'Listening...';
+      }),
+      onCaption: _showCaption,
+      onError: (message) => _update(() {
+        _isListening = false;
+        _transcript = message;
+      }),
+      onStopped: () => _update(() => _isListening = false),
+    );
   }
 
-  Future<void> _initSpeech() async {
-    _speechAvailable = await _speech.initialize(
-      onStatus: (status) {
-        if (status == 'notListening' && _isListening) {
-          setState(() => _isListening = false);
-        }
-      },
-      onError: (error) {
-        setState(() {
-          _isListening = false;
-          _transcript = 'Error: ${error.errorMsg}';
-        });
-      },
-    );
-    setState(() {});
+  void _update(VoidCallback change) {
+    if (mounted) setState(change);
+  }
+
+  void _showCaption(String text, bool isFinal) {
+    _update(() {
+      if (isFinal) {
+        _lines.add(text);
+        if (_lines.length > _maxLines) _lines.removeAt(0);
+      }
+      _transcript = [..._lines, if (!isFinal) text].join('\n');
+    });
   }
 
   Future<void> _toggleListening() async {
-    if (!_speechAvailable) {
-      await _initSpeech();
-      if (!_speechAvailable) return;
-    }
-
     if (_isListening) {
-      await _speech.stop();
       setState(() => _isListening = false);
+      await LiveCaptions.stop();
       return;
     }
 
     setState(() {
       _isListening = true;
-      _transcript = 'Listening...';
+      _lines.clear();
+      _transcript = 'Getting ready...';
     });
 
-    await _speech.listen(
-      onResult: (result) {
-        setState(() {
-          _transcript = result.recognizedWords;
-        });
-      },
-      listenOptions: stt.SpeechListenOptions(
-        partialResults: true,
-        listenMode: stt.ListenMode.dictation,
-        listenFor: const Duration(minutes: 5),
-        pauseFor: const Duration(seconds: 5),
-      ),
-    );
+    if (!await LiveCaptions.start()) {
+      _update(() {
+        _isListening = false;
+        _transcript = 'Allow microphone access to see live captions';
+      });
+    }
   }
 
   @override
   void dispose() {
-    _speech.stop();
+    LiveCaptions.stop();
     super.dispose();
   }
 
